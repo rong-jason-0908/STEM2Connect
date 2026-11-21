@@ -1,0 +1,269 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Tremor Detector</title>
+<style>
+:root{--bg:#f6f7f9;--card:#fff;--ink:#16202c;--mut:#5d6b7a;--line:#dde2e8;--blue:#2563eb;--red:#dc2626;--amber:#d97706;--green:#16a34a}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.5 system-ui,-apple-system,Segoe UI,Roboto,sans-serif}
+main{max-width:1040px;margin:0 auto;padding:24px 16px 48px}
+h1{font-size:26px;margin:0 0 4px}.sub{color:var(--mut);margin:0 0 16px}
+.warn{background:#fff8e6;border:1px solid #f3dca2;border-radius:10px;padding:10px 14px;font-size:14px;margin-bottom:18px}
+.grid{display:grid;grid-template-columns:minmax(0,540px) minmax(0,1fr);gap:18px}@media(max-width:900px){.grid{grid-template-columns:1fr}}
+.card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:16px}
+canvas{display:block;width:100%;background:#fcfdff;border:1px dashed var(--line);border-radius:10px;touch-action:none;cursor:crosshair}
+.row{display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin-top:12px}
+button{border:1px solid var(--line);background:#fff;border-radius:9px;padding:9px 14px;font:inherit;cursor:pointer}
+button.primary{background:var(--blue);border-color:var(--blue);color:#fff}button.shake{background:var(--red);border-color:var(--red);color:#fff}
+button:disabled{opacity:.45;cursor:not-allowed}
+.msg{color:var(--mut);font-size:14px;min-height:21px;margin-top:8px}.msg.err{color:var(--red)}
+.meter{height:16px;background:linear-gradient(90deg,#16a34a,#eab308 50%,#dc2626);border-radius:9px;position:relative;margin:10px 0 4px}
+.pin{position:absolute;top:-5px;width:4px;height:26px;background:var(--ink);border-radius:2px;transform:translateX(-2px);transition:left .5s}
+.big{font-size:34px;font-weight:700;line-height:1.1}.lab{font-weight:600}
+.legend{font-size:13px;color:var(--mut);display:flex;gap:14px}.dot{display:inline-block;width:10px;height:10px;border-radius:50%;margin-right:5px}
+small{color:var(--mut)}label{font-size:14px;color:var(--mut)}
+
+.how{margin-top:18px}.how h2{font-size:20px;margin:0 0 6px}.steps{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin:12px 0}@media(max-width:900px){.steps{grid-template-columns:1fr 1fr}}
+.step{border:1px solid var(--line);border-radius:10px;padding:10px 12px;font-size:14px;background:#fafbfc}.step b{display:block;margin-bottom:2px}
+table.ft{width:100%;border-collapse:collapse;font-size:14px;margin-top:8px}table.ft th,table.ft td{padding:7px 8px;border-bottom:1px solid var(--line);text-align:left;vertical-align:middle}
+table.ft th{font-size:12px;color:var(--mut);text-transform:uppercase;letter-spacing:.03em}.num{font-variant-numeric:tabular-nums;white-space:nowrap}
+.bar{position:relative;height:14px;width:170px;background:#f0f2f5;border-radius:7px}.bar i{position:absolute;top:0;height:14px}.bar .mid{position:absolute;left:50%;top:-2px;width:1px;height:18px;background:#8794a3}
+.eq{background:#f3f6fb;border:1px solid #dbe4f3;border-radius:10px;padding:10px 12px;font-size:14px;margin-top:12px}
+.dim{color:var(--mut)}
+</style></head><body><main>
+<h1>Tremor Detector</h1>
+<p class="sub">Draw a spiral with your mouse. the model will read your motion using the x,y, and timestamp, and measure the tremor for your result</p>
+<div class="warn"><b>Mouse only.</b> Trackpads and touchscreens are not supported: in our small test, stop-and-go cursor motion on trackpads scored as tremor-like (false alarms).</div>
+<div class="warn"><b>This is a tool not a diagnosis.</b> it was trained on tablet-pen spirals from 61 Parkinson's patients and 15 controls, and calibrated on 16 healthy mouse users. It hasn't been validated on real patients using a mouse. Caffeine, nerves, stress, a bad mouse, etc. can also cause tremor-like signals.</div>
+<div class="grid">
+ <div class="card">
+  <canvas id="cv" width="520" height="520"></canvas>
+  <div class="row">
+   <button id="clear">Clear</button>
+   <button id="shake" class="shake" disabled>Replay with simulated tremor</button>
+   <button id="copy" disabled title="Copy the raw drawing to paste into the notebook">Copy trace</button>
+   <label>size <input id="amp" type="range" min="1" max="8" step="0.5" value="3"> <span id="ampv">3</span> px</label>
+  </div>
+  <div class="msg" id="msg">Start in the middle and spiral outward, 2&ndash;3 turns, at a comfortable pace. Hold the button down the whole time.</div>
+ </div>
+ <div class="card" id="res">
+  <small>RESULT</small>
+  <div class="big" id="score">&ndash;</div><div class="lab" id="verdict">Draw a spiral to begin</div>
+  <div class="meter"><div class="pin" id="pin" style="left:0%"></div></div>
+  <div class="legend"><span>0 = steady</span><span style="margin-left:auto">1 = tremor-like</span></div>
+  <p style="margin:14px 0 4px"><b>Tremor spectrum</b> <small>(wobble left after removing the slow spiral motion)</small></p>
+  <canvas id="sp" width="520" height="220" style="height:auto;cursor:default"></canvas>
+  <div class="legend" id="lg"></div>
+ </div>
+</div>
+
+<div class="card how" id="how">
+ <h2>How the score is built</h2>
+ <div class="steps">
+  <div class="step">1) your cursor position is recorded every few milliseconds</div>
+  <div class="step">2) smooth out the slow, intended motion. this way, we remove the spiral and isolate the tremor</div>
+  <div class="step">3) split the wobble into frequencies. parkinson's sits at around 4-6 Hz</div>
+  <div class="step">4) your score is compared to healthy users, weighted by a simple regression model and pushes are summed</div>
+ </div>
+ <div id="howbody"><span class="dim">Draw a spiral to see the numbers behind your score.</span></div>
+</div>
+</main>
+<script>
+// Tremor scoring in plain JS: port of the Python pipeline (resample -> normalise -> Savitzky-Golay -> Welch PSD -> features -> logistic regression)
+const TD = (function () {
+  const FS = 100;
+  function solveInv(M) { // Gauss-Jordan inverse of small square matrix
+    const n = M.length, A = M.map((r, i) => r.concat(Array.from({ length: n }, (_, j) => (i === j ? 1 : 0))));
+    for (let c = 0; c < n; c++) {
+      let p = c; for (let r = c + 1; r < n; r++) if (Math.abs(A[r][c]) > Math.abs(A[p][c])) p = r;
+      [A[c], A[p]] = [A[p], A[c]]; const d = A[c][c]; for (let j = 0; j < 2 * n; j++) A[c][j] /= d;
+      for (let r = 0; r < n; r++) if (r !== c) { const f = A[r][c]; if (f) for (let j = 0; j < 2 * n; j++) A[r][j] -= f * A[c][j]; }
+    }
+    return A.map(r => r.slice(n));
+  }
+  const pinvCache = {};
+  function pinv(w, p) { // (A^T A)^-1 A^T, rows = polynomial coefficients
+    const key = w + ',' + p; if (pinvCache[key]) return pinvCache[key];
+    const m = (w - 1) / 2, A = [];
+    for (let i = 0; i < w; i++) { const r = []; for (let j = 0; j <= p; j++) r.push(Math.pow(i - m, j)); A.push(r); }
+    const AtA = Array.from({ length: p + 1 }, (_, a) => Array.from({ length: p + 1 }, (_, b) => { let s = 0; for (let i = 0; i < w; i++) s += A[i][a] * A[i][b]; return s; }));
+    const inv = solveInv(AtA);
+    const P = Array.from({ length: p + 1 }, (_, a) => Array.from({ length: w }, (_, k) => { let s = 0; for (let b = 0; b <= p; b++) s += inv[a][b] * A[k][b]; return s; }));
+    return (pinvCache[key] = P);
+  }
+  function fact(n) { let f = 1; for (let i = 2; i <= n; i++) f *= i; return f; }
+  function polyEval(a, x, d, delta) { // d-th derivative of sum a_j x^j, in time units
+    let s = 0; for (let j = d; j < a.length; j++) s += a[j] * (fact(j) / fact(j - d)) * Math.pow(x, j - d);
+    return s / Math.pow(delta, d);
+  }
+  function savgol(arr, w, p, d, delta) { // mode='interp' like scipy
+    const n = arr.length, m = (w - 1) / 2, P = pinv(w, p), out = new Float64Array(n);
+    const c = P[d].map(v => v * fact(d) / Math.pow(delta, d));
+    for (let i = m; i < n - m; i++) { let s = 0; for (let k = 0; k < w; k++) s += c[k] * arr[i - m + k]; out[i] = s; }
+    const coefAt = (start) => P.map(row => { let s = 0; for (let k = 0; k < w; k++) s += row[k] * arr[start + k]; return s; });
+    const aF = coefAt(0), aL = coefAt(n - w);
+    for (let i = 0; i < m; i++) out[i] = polyEval(aF, i - m, d, delta);
+    for (let i = n - m; i < n; i++) out[i] = polyEval(aL, i - (n - 1 - m), d, delta);
+    return out;
+  }
+  const dftCache = {};
+  function tables(N) { if (dftCache[N]) return dftCache[N]; const K = N / 2 + 1, C = [], S = [];
+    for (let k = 0; k < K; k++) { const c = new Float64Array(N), s = new Float64Array(N); for (let n = 0; n < N; n++) { c[n] = Math.cos(2 * Math.PI * k * n / N); s[n] = Math.sin(2 * Math.PI * k * n / N); } C.push(c); S.push(s); }
+    return (dftCache[N] = { C, S, K }); }
+  function welch(x, fs, nper) {
+    nper = Math.min(nper, x.length); const nov = Math.floor(nper / 2), step = nper - nov;
+    const win = Array.from({ length: nper }, (_, k) => 0.5 - 0.5 * Math.cos(2 * Math.PI * k / nper));
+    const sw2 = win.reduce((s, v) => s + v * v, 0), T = tables(nper), K = T.K, psd = new Float64Array(K); let cnt = 0;
+    for (let st = 0; st + nper <= x.length; st += step) {
+      let mean = 0; for (let i = 0; i < nper; i++) mean += x[st + i]; mean /= nper;
+      const seg = new Float64Array(nper); for (let i = 0; i < nper; i++) seg[i] = (x[st + i] - mean) * win[i];
+      for (let k = 0; k < K; k++) { let re = 0, im = 0; const c = T.C[k], s = T.S[k]; for (let n = 0; n < nper; n++) { re += seg[n] * c[n]; im -= seg[n] * s[n]; } psd[k] += re * re + im * im; }
+      cnt++;
+    }
+    const f = new Float64Array(K);
+    for (let k = 0; k < K; k++) { let v = psd[k] / cnt / (fs * sw2); if (k > 0 && !(nper % 2 === 0 && k === K - 1)) v *= 2; psd[k] = v; f[k] = k * fs / nper; }
+    return { f, p: psd };
+  }
+  function band(f, p, lo, hi) { let s = 0, any = false; for (let i = 0; i < f.length; i++) if (f[i] >= lo && f[i] < hi) { s += p[i]; any = true; } return any ? s * (f[1] - f[0]) : 0; }
+  function median(a) { const b = Array.from(a).sort((u, v) => u - v), n = b.length; return n % 2 ? b[(n - 1) / 2] : (b[n / 2 - 1] + b[n / 2]) / 2; }
+  function resample(x, y, t) {
+    const kx = [], ky = [], kt = [];
+    for (let i = 0; i < t.length; i++) if (i === 0 || t[i] - t[i - 1] > 0) { kx.push(x[i]); ky.push(y[i]); kt.push(t[i]); }
+    const n = Math.ceil((kt[kt.length - 1] - kt[0]) * FS - 1e-9), xr = new Float64Array(n), yr = new Float64Array(n), tr = new Float64Array(n);
+    let j = 0;
+    for (let i = 0; i < n; i++) { const tt = kt[0] + i / FS; tr[i] = tt; while (j < kt.length - 2 && kt[j + 1] < tt) j++;
+      const u = (tt - kt[j]) / (kt[j + 1] - kt[j]); xr[i] = kx[j] + u * (kx[j + 1] - kx[j]); yr[i] = ky[j] + u * (ky[j + 1] - ky[j]); }
+    return { x: xr, y: yr, t: tr };
+  }
+  function featuresFromResampled(x0, y0, t) {
+    const n = x0.length; let mx = 0, my = 0; for (let i = 0; i < n; i++) { mx += x0[i]; my += y0[i]; } mx /= n; my /= n;
+    let s2 = 0; for (let i = 0; i < n; i++) s2 += (x0[i] - mx) ** 2 + (y0[i] - my) ** 2; const sc = Math.sqrt(s2 / n);
+    const x = new Float64Array(n), y = new Float64Array(n); for (let i = 0; i < n; i++) { x[i] = (x0[i] - mx) / sc; y[i] = (y0[i] - my) / sc; }
+    const dur = t[n - 1] - t[0], w = (Math.floor(0.4 * FS)) | 1, xs = savgol(x, w, 3, 0, 1), ys = savgol(y, w, 3, 0, 1);
+    const rx = x.map((v, i) => v - xs[i]), ry = y.map((v, i) => v - ys[i]);
+    const nper = Math.min(128, n), A = welch(rx, FS, nper), B = welch(ry, FS, nper), f = A.f, p = A.p.map((v, i) => v + B.p[i]);
+    const tot = band(f, p, 0.5, 20) + 1e-12, tr46 = band(f, p, 4, 6) / tot, tr38 = band(f, p, 3, 8) / tot;
+    const pm = []; for (let i = 0; i < f.length; i++) if (f[i] >= 2 && f[i] <= 12) pm.push(p[i]);
+    const pkr = Math.max(...pm) / (median(pm) + 1e-12);
+    const d = 1 / FS, vx = savgol(x, 11, 3, 1, d), vy = savgol(y, 11, 3, 1, d), ax = savgol(x, 11, 3, 2, d), ay = savgol(y, 11, 3, 2, d);
+    const sp = new Float64Array(n), ac = new Float64Array(n); let ms = 0, ma = 0;
+    for (let i = 0; i < n; i++) { sp[i] = Math.hypot(vx[i], vy[i]); ac[i] = Math.hypot(ax[i], ay[i]); ms += sp[i]; ma += ac[i]; } ms /= n; ma /= n;
+    let vs = 0; for (let i = 0; i < n; i++) vs += (sp[i] - ms) ** 2; const speed_cv = Math.sqrt(vs / n) / (ms + 1e-9);
+    let zc = 0; for (let i = 0; i < n; i++) if (sp[i] < 0.1 * ms) zc++;
+    let rr = 0; for (let i = 0; i < n; i++) rr += rx[i] ** 2 + ry[i] ** 2;
+    // spiral fit r = a + b*theta
+    const th = new Float64Array(n), r = new Float64Array(n); let prev = Math.atan2(y[0], x[0]), off = 0; th[0] = prev; r[0] = Math.hypot(x[0], y[0]);
+    for (let i = 1; i < n; i++) { const a = Math.atan2(y[i], x[i]); let dd = a - prev; if (dd > Math.PI) off -= 2 * Math.PI * Math.ceil((dd - Math.PI) / (2 * Math.PI)); else if (dd < -Math.PI) off += 2 * Math.PI * Math.ceil((-dd - Math.PI) / (2 * Math.PI)); th[i] = a + off; prev = a; r[i] = Math.hypot(x[i], y[i]); }
+    let St = 0, Sr = 0, Stt = 0, Str = 0; for (let i = 0; i < n; i++) { St += th[i]; Sr += r[i]; Stt += th[i] * th[i]; Str += th[i] * r[i]; }
+    const det = n * Stt - St * St, b = (n * Str - St * Sr) / det, a = (Sr - b * St) / n;
+    let rv = 0, rm = Sr / n; for (let i = 0; i < n; i++) { const e = r[i] - (a + b * th[i]); rv += e * e; }
+    const spiral_resid = Math.sqrt(rv / n) / (rm + 1e-9), turns = Math.abs(th[n - 1] - th[0]) / (2 * Math.PI);
+    return { rx, ry, dur, speed_cv, acc_rel: ma / (ms + 1e-9), tremor_resid_rms: Math.sqrt(rr / n), tremor_4_6: tr46, tremor_3_8: tr38, tremor_peak_ratio: pkr, spiral_resid, speed_zero_frac: zc / n, turns, freq: f, psd: p };
+  }
+  const FEATS = ['speed_cv', 'acc_rel', 'tremor_resid_rms', 'tremor_4_6', 'tremor_3_8', 'tremor_peak_ratio', 'spiral_resid', 'speed_zero_frac'];
+  function riskDetail(f, W) {
+    const v = FEATS.map(k => (k === 'tremor_peak_ratio' ? Math.log1p(f[k]) : f[k])), contrib = [];
+    let s = W.intercept[0];
+    for (let i = 0; i < v.length; i++) { const c = ((((v[i] - W.mouse_center[i]) / W.mouse_scale[i]) - W.mean[i]) / W.scale[i]) * W.coef[i]; contrib.push(c); s += c; }
+    return { risk: 1 / (1 + Math.exp(-s)), logit: s, bias: W.intercept[0], contrib };
+  }
+  function risk(f, W) { return riskDetail(f, W).risk; }
+  // pts: [[x, y, t_ms], ...]  ->  result object (or {error})
+  function score(pts, W, injectAmp, injectHz) {
+    injectAmp = injectAmp || 0; injectHz = injectHz || 5;
+    const x = pts.map(p => p[0]), y = pts.map(p => p[1]), t = pts.map(p => (p[2] - pts[0][2]) / 1000);
+    if (pts.length < 150) return { error: 'Too few points. Draw slower and keep the button held down.' };
+    const dur = t[t.length - 1] - t[0];
+    if (dur < 2 || dur > 90) return { error: 'Drawing took ' + dur.toFixed(0) + ' s. Aim for roughly 8-30 seconds.' };
+    const R = resample(x, y, t); const n = R.x.length;
+    let mx = 0, my = 0; for (let i = 0; i < n; i++) { mx += R.x[i]; my += R.y[i]; } mx /= n; my /= n;
+    let u = Math.atan2(R.y[0] - my, R.x[0] - mx), off = 0, first = u, last = u;
+    for (let i = 1; i < n; i++) { const a = Math.atan2(R.y[i] - my, R.x[i] - mx); let dd = a - u; if (dd > Math.PI) off -= 2 * Math.PI; else if (dd < -Math.PI) off += 2 * Math.PI; last = a + off; u = a; }
+    if (Math.abs(last - first) / (2 * Math.PI) < 1.8) return { error: 'Draw at least two full turns of a spiral.' };
+    if (injectAmp > 0) for (let i = 0; i < n; i++) { R.x[i] += injectAmp * Math.sin(2 * Math.PI * injectHz * R.t[i] + 0.7); R.y[i] += injectAmp * Math.sin(2 * Math.PI * injectHz * R.t[i] + 2.1); }
+    const f = featuresFromResampled(R.x, R.y, R.t), step = Math.max(1, Math.floor(n / 600)), fr = [], ps = [], px = [], py = [];
+    let tot = 0; for (let i = 0; i < f.freq.length; i++) tot += f.psd[i];
+    for (let i = 0; i < f.freq.length; i++) if (f.freq[i] <= 15) { fr.push(f.freq[i]); ps.push(f.psd[i] / tot); }
+    for (let i = 0; i < n; i += step) { px.push(R.x[i]); py.push(R.y[i]); }
+    const det = riskDetail(f, W), rs = Math.max(1, Math.floor(n / 500)), wt = [], wx = [];
+    for (let i = 0; i < n; i += rs) { wt.push(R.t[i] - R.t[0]); wx.push(f.rx[i]); }
+    const base = FEATS.map((k, i) => (k === 'tremor_peak_ratio' ? Math.expm1(W.mouse_center[i]) : W.mouse_center[i]));
+    return { risk: det.risk, detail: det, base, values: FEATS.map(k => f[k]), wobble: { t: wt, x: wx }, features: f, freq: fr, psd: ps, path: { x: px, y: py }, simulated: injectAmp > 0 };
+  }
+  return { score, riskDetail, featuresFromResampled, resample, risk, FEATS, savgol, welch };
+})();
+
+const WEIGHTS={"mean": [1.3439369673526325, 7.136340247638821, 8.410078967467413, 3.2362281944111797, 2.677295550565566, 3.9891437580196882, 1.2541653062114746, 0.31498004143102054], "scale": [1.6003091940207697, 9.736793740671933, 14.338624558954656, 3.3829413797120185, 1.9052455069528123, 4.079924652399428, 1.9707153708837046, 2.1449932239973806], "coef": [0.2651942653766169, 0.10420321083509648, 0.25677439094169935, 1.2309700598825504, 1.230924339411001, 1.1489033881192678, 1.3848226802824868, 0.20236220807639382], "intercept": [2.7643075998115076], "mouse_center": [0.3644503647984315, 4.454936862036998, 0.006441183943473041, 0.2995789397424218, 0.7914937343806006, 1.9472904705661866, 0.12482324461208302, 0.011963534361851332], "mouse_scale": [0.049330428004084576, 0.49301094493046976, 0.0011986970662607216, 0.057082007332317414, 0.03935740874047325, 0.33985377212383655, 0.03400490231704209, 0.005485414512241548]};
+
+const cv=document.getElementById('cv'),ctx=cv.getContext('2d'),sp=document.getElementById('sp'),sx=sp.getContext('2d');
+const msg=document.getElementById('msg'),shakeBtn=document.getElementById('shake'),amp=document.getElementById('amp');
+let pts=[],drawing=false,base=null,shaky=null;
+const setMsg=(t,e)=>{msg.textContent=t;msg.className='msg'+(e?' err':'')};
+amp.oninput=()=>document.getElementById('ampv').textContent=amp.value;
+function size(){const w=Math.min(520,cv.parentElement.clientWidth-34);cv.style.width=w+'px'}
+function reset(){resetHow();pts=[];base=shaky=null;ctx.clearRect(0,0,cv.width,cv.height);shakeBtn.disabled=true;document.getElementById('copy').disabled=true;
+ document.getElementById('score').textContent='–';document.getElementById('verdict').textContent='Draw a spiral to begin';
+ document.getElementById('pin').style.left='0%';drawSpec();document.getElementById('lg').innerHTML='';
+ setMsg('Start in the middle and spiral outward, 2–3 turns, at a comfortable pace. Hold the button down the whole time.')}
+document.getElementById('clear').onclick=reset;
+function pos(e){const r=cv.getBoundingClientRect(),k=cv.width/r.width;return[(e.clientX-r.left)*k,(e.clientY-r.top)*k]}
+cv.addEventListener('pointerdown',e=>{reset();drawing=true;cv.setPointerCapture(e.pointerId);add(e)});
+cv.addEventListener('pointermove',e=>{if(!drawing)return;(e.getCoalescedEvents?e.getCoalescedEvents():[e]).forEach(add)});
+cv.addEventListener('pointerup',()=>{if(!drawing)return;drawing=false;analyse()});
+function add(e){const[x,y]=pos(e);pts.push([x,y,e.timeStamp]);const n=pts.length;
+ if(n>1){ctx.strokeStyle='#2563eb';ctx.lineWidth=2;ctx.lineJoin=ctx.lineCap='round';ctx.beginPath();ctx.moveTo(pts[n-2][0],pts[n-2][1]);ctx.lineTo(x,y);ctx.stroke()}}
+async function call(extra){extra=extra||{};try{return TD.score(pts,WEIGHTS,extra.inject_amp||0,extra.inject_hz||5)}catch(e){return{error:'Could not analyse that drawing. Try again.'}}}
+async function analyse(){
+ setMsg('Analysing…');const o=await call();
+ if(o.error){setMsg(o.error,true);return}
+ base=o;show(o);drawSpec();shakeBtn.disabled=false;document.getElementById('copy').disabled=false;
+ setMsg('Now press "Replay with simulated tremor" to see what the same drawing would look like with added tremor.')}
+shakeBtn.onclick=async()=>{
+ const o=await call({inject_amp:parseFloat(amp.value),inject_hz:5});
+ if(o.error){setMsg(o.error,true);return}
+ shaky=o;ctx.clearRect(0,0,cv.width,cv.height);
+ ctx.strokeStyle='#dc2626';ctx.lineWidth=2;ctx.beginPath();o.path.x.forEach((x,i)=>i?ctx.lineTo(x,o.path.y[i]):ctx.moveTo(x,o.path.y[i]));ctx.stroke();
+ show(o);drawSpec();setMsg('Same person, same drawing, but with a simulated '+amp.value+' px tremor at 5 Hz added by software.')};
+function show(o){explain(o);const r=o.risk;document.getElementById('score').textContent=r.toFixed(2);
+ document.getElementById('pin').style.left=(r*100)+'%';
+ const v=r<0.5?['No tremor-like signal',''] : r<0.8?['Inconclusive',''] : ['Tremor-like signal detected',''];
+ document.getElementById('verdict').textContent=v[0]+(o.simulated?' (simulated tremor)':'');
+ document.getElementById('lg').innerHTML='<span><span class="dot" style="background:#2563eb"></span>your drawing</span>'+(shaky?'<span><span class="dot" style="background:#dc2626"></span>with simulated tremor</span>':'')}
+function drawSpec(){const W=sp.width,H=sp.height,L=36,B=26,T=8;sx.clearRect(0,0,W,H);
+ const X=f=>L+(W-L-8)*f/15;sx.fillStyle='rgba(250,204,21,.28)';sx.fillRect(X(4),T,X(6)-X(4),H-B-T);
+ sx.strokeStyle='#9aa5b1';sx.lineWidth=1;sx.beginPath();sx.moveTo(L,T);sx.lineTo(L,H-B);sx.lineTo(W-8,H-B);sx.stroke();
+ sx.fillStyle='#5d6b7a';sx.font='13px system-ui';sx.textAlign='center';[0,3,6,9,12].forEach(f=>sx.fillText(f,X(f),H-8));sx.fillText('Hz',W-18,H-8);
+ const curves=[[base,'#2563eb'],[shaky,'#dc2626']].filter(c=>c[0]);if(!curves.length)return;
+ const mx=Math.max(...curves.map(c=>Math.max(...c[0].psd)))*1.1;
+ curves.forEach(([o,col])=>{sx.strokeStyle=col;sx.lineWidth=2;sx.beginPath();o.freq.forEach((f,i)=>{const y=H-B-(H-B-T)*o.psd[i]/mx;i?sx.lineTo(X(f),y):sx.moveTo(X(f),y)});sx.stroke()})}
+
+const FDESC={tremor_4_6:['wobble at 4-6 Hz','how much of the wobble is in the parkinson\'s tremor band'],tremor_3_8:['wobble at 3-8 Hz','same thing, just a wider band'],
+ tremor_peak_ratio:['wobble peak','how tall the biggest wobble peak (2-12 Hz) is vs a normal frequency'],tremor_resid_rms:['wobble size','how big the wobble is compared to the spiral'],
+ spiral_resid:['spiral error','how far your line strays from a clean spiral'],speed_cv:['speed unevenness','how much your drawing speed changes'],
+ acc_rel:['jerkiness','how sharply the cursor speeds up or slows down'],speed_zero_frac:['near-stops','how much of the time the cursor is basically still']};
+function fmt(v){const a=Math.abs(v);return a>=100?v.toFixed(0):a>=10?v.toFixed(1):a>=1?v.toFixed(2):a>=0.01?v.toFixed(3):v.toExponential(1)}
+function explain(o){
+ const d=o.detail,names=TD.FEATS;const max=Math.max(1.5,...d.contrib.map(Math.abs));
+ const order=names.map((k,i)=>i).sort((a,b)=>Math.abs(d.contrib[b])-Math.abs(d.contrib[a]));
+ let rows='';order.forEach(i=>{const k=names[i],c=d.contrib[i],w=Math.min(50,Math.abs(c)/max*50),col=c>0?'var(--red)':'var(--green)';
+  rows+='<tr><td><b>'+FDESC[k][0]+'</b><br><span class="dim">'+FDESC[k][1]+'</span></td><td class="num">'+fmt(o.values[i])+'</td><td class="num dim">'+fmt(o.base[i])+'</td>'+
+  '<td><div class="bar"><div class="mid"></div><i style="background:'+col+';'+(c>0?'left:50%':'right:50%')+';width:'+w+'%"></i></div></td><td class="num">'+(c>0?'+':'')+c.toFixed(2)+'</td></tr>'});
+ document.getElementById('howbody').innerHTML=
+  '<p style="margin:0 0 4px"><b>the wobble the model looks at</b> <span class="dim">(side to side motion left over after taking out the slow spiral, size is compared to the spiral)</span></p>'+
+  '<canvas id="wb" width="1000" height="150" style="height:auto;cursor:default"></canvas>'+
+  '<table class="ft"><tr><th>measurement</th><th>your drawing</th><th>typical healthy mouse user</th><th>pushes toward steady ← → tremor-like</th><th>push</th></tr>'+rows+'</table>'+
+  '<div class="eq"><b>putting it together.</b> sum of pushes <span class="num">'+(d.logit-d.bias).toFixed(2)+'</span> + starting offset <span class="num">'+d.bias.toFixed(2)+'</span> = <span class="num">'+d.logit.toFixed(2)+
+  '</span>. score = 1 / (1 + e<sup>&minus;'+d.logit.toFixed(2)+'</sup>) = <b>'+d.risk.toFixed(2)+'</b>. below 0.5 is steady, above 0.8 is tremor-like.</div>'+
+  '<p class="dim" style="margin:10px 0 0;font-size:13px">the weights come from a model trained on tablet spirals (61 Parkinson&rsquo;s patients, 15 controls) and calibrated on 16 healthy mouse users. the replay button adds a 5&nbsp;Hz sine wave with software, so you can see the 4&ndash;6&nbsp;Hz rows light up.</p>';
+ const c=document.getElementById('wb'),x=c.getContext('2d'),W=c.width,H=c.height,L=48,T=8,B=22,t=o.wobble.t,v=o.wobble.x,m=Math.max(0.02,...v.map(Math.abs))*1.15,tm=t[t.length-1];
+ x.fillStyle='#5d6b7a';x.font='13px system-ui';x.strokeStyle='#e3e8ee';x.lineWidth=1;
+ x.beginPath();x.moveTo(L,T+(H-T-B)/2);x.lineTo(W-6,T+(H-T-B)/2);x.stroke();
+ x.textAlign='center';for(let s=0;s<=tm;s+=Math.ceil(tm/8)){const px=L+(W-L-6)*s/tm;x.fillText(s+'s',px,H-6)}
+ x.textAlign='right';x.fillText('+'+m.toFixed(2),L-4,T+10);x.fillText('0',L-4,T+(H-T-B)/2+4);
+ x.strokeStyle=o.simulated?'#dc2626':'#2563eb';x.lineWidth=1.4;x.beginPath();
+ v.forEach((val,i)=>{const px=L+(W-L-6)*t[i]/tm,py=T+(H-T-B)/2-(H-T-B)/2*val/m;i?x.lineTo(px,py):x.moveTo(px,py)});x.stroke()}
+function resetHow(){document.getElementById('howbody').innerHTML='<span class="dim">Draw a spiral to see the numbers behind your score.</span>'}
+
+document.getElementById('copy').onclick=async()=>{const s=JSON.stringify(pts.map(p=>[+p[0].toFixed(1),+p[1].toFixed(1),+p[2].toFixed(1)]));
+ try{await navigator.clipboard.writeText(s)}catch(e){const a=document.createElement('textarea');a.value=s;document.body.appendChild(a);a.select();document.execCommand('copy');a.remove()}
+ setMsg('Trace copied. Paste it into the TRACE cell of the notebook.')};
+size();addEventListener('resize',size);drawSpec();
+</script></body></html>
