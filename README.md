@@ -6,3 +6,7 @@ Claude helped: make the matplotlibs so they're easily interpretable, debug my co
 
 FOR JUDGES: you only need to download the index HTML and open from file explorer to run the demo locally
 thank you so much!!! :D
+
+
+demo video:
+https://youtu.be/LjFKzhhkAiI
